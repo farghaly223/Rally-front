@@ -1,0 +1,6 @@
+{
+  "name": "Rally - Cinematic Access",
+  "description": "Exclusive access to film premieres, identity verification, ticket reservations, and admin premiere management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

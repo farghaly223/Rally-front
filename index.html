@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RALLY - Cinematic Access</title>
+    <!--
+      One stylesheet request instead of two, carrying only the weights the
+      design system actually uses (see src/index.css: Montserrat 600/700/800,
+      JetBrains Mono 600, Inter 400-700) and the Material Symbols FILL axis
+      alone rather than the full weight range — the UI only toggles FILL.
+
+      Loaded with media="print" + onload so it never blocks first paint; the
+      noscript copy keeps icons and type working without JavaScript.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@600&family=Montserrat:wght@600;700;800&family=Material+Symbols+Outlined:FILL@0..1&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@600&family=Montserrat:wght@600;700;800&family=Material+Symbols+Outlined:FILL@0..1&display=swap"
+      />
+    </noscript>
+  </head>
+  <body class="bg-[#0A0A0A] text-[#e5e2e1] antialiased min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
