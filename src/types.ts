@@ -57,11 +57,26 @@ export function isDetailLocked(event: Pick<RallyEvent, 'startsAt'>): boolean {
 }
 
 /**
+ * What an account may do, independent of whether it may act at all.
+ *
+ * Approving a member changes `approvalStatus` and leaves `role` untouched, so a
+ * suspended admin keeps its role and is refused on status alone.
+ */
+export type Role = 'USER' | 'EVENTS_ADMIN' | 'VERIFICATION_ADMIN' | 'SUPER_ADMIN';
+
+export type ApprovalStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'SUSPENDED'
+  | 'DELETED';
+
+/**
  * Mirrors the backend's authenticated user.
  *
- * Deliberately has no selfieUrl / idDocumentUrl: identity photos are never
- * addressable by a client. They are proxied to admins only, behind a password
- * re-entry, and hard-deleted once a decision is made.
+ * No identity-document fields of any kind: verification happens off-platform
+ * between the member and a real person, and no image is ever uploaded to Rally
+ * for that purpose.
  */
 export interface UserProfile {
   id: string;
@@ -69,8 +84,23 @@ export interface UserProfile {
   phone: string;
   username: string;
   gender: Gender;
-  role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
-  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED' | 'DELETED';
+  role: Role;
+  approvalStatus: ApprovalStatus;
+}
+
+/** Platforms the verifying account can live on. */
+export type VerificationPlatform = 'INSTAGRAM' | 'TELEGRAM' | 'TIKTOK';
+
+/**
+ * Who a pending member messages to get verified.
+ *
+ * Always read from the API and never hardcoded, so the verifying account can be
+ * rotated without a deploy. `null` for males and for approved females — the
+ * server decides who is owed one.
+ */
+export interface VerificationContact {
+  platform: VerificationPlatform;
+  handleOrUrl: string;
 }
 
 /**
@@ -101,13 +131,66 @@ export type ActiveTab =
   | 'saved'
   | 'profile';
 
+/**
+ * Where to send someone who wants to act on a `verificationContact`.
+ *
+ * Instagram and TikTok handles resolve to a profile URL; Telegram handles do
+ * too. Anything already absolute is passed through untouched. Returns `null`
+ * when no link can be formed, so the caller renders plain text rather than a
+ * dead anchor.
+ */
+export function verificationContactUrl(contact: VerificationContact): string | null {
+  const raw = contact.handleOrUrl.trim();
+  if (raw === '') return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const handle = raw.replace(/^@/, '');
+  if (handle === '') return null;
+
+  switch (contact.platform) {
+    case 'INSTAGRAM':
+      return `https://instagram.com/${handle}`;
+    case 'TELEGRAM':
+      return `https://t.me/${handle}`;
+    case 'TIKTOK':
+      return `https://tiktok.com/@${handle}`;
+  }
+}
+
+export const VERIFICATION_PLATFORM_LABEL: Record<VerificationPlatform, string> = {
+  INSTAGRAM: 'Instagram',
+  TELEGRAM: 'Telegram',
+  TIKTOK: 'TikTok',
+};
+
 /** Verification is a server-side decision, not a client-held flag. */
 export function isVerified(user: Pick<UserProfile, 'approvalStatus'>): boolean {
   return user.approvalStatus === 'APPROVED';
 }
 
+/** Any non-member role gets the admin surface instead of the member one. */
 export function isAdmin(user: Pick<UserProfile, 'role'>): boolean {
-  return user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+  return user.role !== 'USER';
+}
+
+/**
+ * Which admin sections to *offer* a role.
+ *
+ * Presentation only. The backend answers 403 on every route regardless of what
+ * is rendered here, and those refusals are surfaced rather than pre-empted —
+ * this exists so an Events Admin is not shown a Pending Members tab that can
+ * only ever fail, not to enforce anything.
+ */
+export function canManageEvents(role: Role): boolean {
+  return role === 'EVENTS_ADMIN' || role === 'SUPER_ADMIN';
+}
+
+export function canVerifyMembers(role: Role): boolean {
+  return role === 'VERIFICATION_ADMIN' || role === 'SUPER_ADMIN';
+}
+
+export function canManageAdmins(role: Role): boolean {
+  return role === 'SUPER_ADMIN';
 }
 
 /**

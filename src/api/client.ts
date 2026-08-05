@@ -1,5 +1,14 @@
+import { supabase } from '../lib/supabase';
+import type {
+  ApprovalStatus,
+  Gender,
+  Role,
+  VerificationContact,
+  VerificationPlatform,
+} from '../types';
+
 export const API_BASE_URL =
-  (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:4000/api/v1';
+  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api/v1';
 
 export class APIError extends Error {
   constructor(
@@ -12,93 +21,82 @@ export class APIError extends Error {
   }
 }
 
-/** In-memory only. localStorage is readable by any XSS payload. */
-let accessToken: string | null = null;
-
-export function setAccessToken(token: string | null): void {
-  accessToken = token;
-}
-
-export function getAccessToken(): string | null {
-  return accessToken;
-}
-
-function authHeaders(): Record<string, string> {
-  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-}
-
 interface FetchOptions extends RequestInit {
-  elevationToken?: string;
+  /**
+   * Internal. Marks a call that is already a retry so a refusal cannot bounce
+   * between refresh and re-request forever.
+   */
+  retried?: boolean;
+}
+
+async function authHeader(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function readError(
+  response: Response,
+): Promise<{ message: string; code?: string }> {
+  const body = (await response.json().catch(() => ({}))) as {
+    error?: { message?: string; code?: string };
+  };
+  return {
+    message: body.error?.message ?? 'Request failed',
+    code: body.error?.code,
+  };
 }
 
 /**
- * Wraps fetch with credentials (so the HttpOnly refresh cookie is sent) and a
- * single automatic refresh-and-retry on 401.
+ * Every request to our backend, with the Supabase access token attached.
+ *
+ * Two recoverable refusals are retried exactly once each, and only once:
+ *
+ *  - **401** — the token expired. Supabase refreshes it; a failed refresh means
+ *    the session is genuinely dead and the error propagates rather than looping.
+ *  - **409 PROFILE_INCOMPLETE** — signup created the auth identity but the
+ *    profile call did not land. Recreating the profile is idempotent server-
+ *    side, so retrying is safe and turns a permanently broken shell into a
+ *    self-healing one on the next page load.
+ *
+ * `retried` guards both: a retry that fails the same way surfaces the error.
  */
 async function fetchAPI(path: string, init: FetchOptions = {}): Promise<Response> {
-  const { elevationToken, headers, ...rest } = init;
+  const { retried = false, headers, ...rest } = init;
 
-  const build = (): Record<string, string> => {
-    const merged: Record<string, string> = {
-      ...(headers as Record<string, string> | undefined),
-      ...authHeaders(),
-    };
-    if (elevationToken) {
-      merged['X-Review-Elevation'] = elevationToken;
-    }
-    return merged;
-  };
-
-  let response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
-    credentials: 'include',
-    headers: build(),
+    headers: {
+      ...(headers as Record<string, string> | undefined),
+      ...(await authHeader()),
+    },
   });
 
-  // One refresh attempt, then give up — avoids an infinite loop when the
-  // refresh token itself is dead.
-  if (response.status === 401 && path !== '/auth/refresh') {
-    const refreshed = await tryRefresh();
-    if (refreshed) {
-      response = await fetch(`${API_BASE_URL}${path}`, {
-        ...rest,
-        credentials: 'include',
-        headers: build(),
-      });
+  if (response.ok) return response;
+
+  const { message, code } = await readError(response);
+
+  if (!retried) {
+    if (response.status === 401) {
+      const { data } = await supabase.auth.refreshSession();
+      if (data.session) {
+        return fetchAPI(path, { ...init, retried: true });
+      }
+    }
+
+    // Re-running complete-profile would recurse into this same branch, so it is
+    // excluded by path rather than relying on the flag alone.
+    if (
+      response.status === 409 &&
+      code === 'PROFILE_INCOMPLETE' &&
+      path !== COMPLETE_PROFILE_PATH
+    ) {
+      await api.auth.completeProfile();
+      return fetchAPI(path, { ...init, retried: true });
     }
   }
 
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as {
-      error?: { message?: string; code?: string };
-    };
-    throw new APIError(
-      body.error?.message ?? 'Request failed',
-      response.status,
-      body.error?.code,
-    );
-  }
-
-  return response;
-}
-
-async function tryRefresh(): Promise<boolean> {
-  try {
-    const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (!res.ok) {
-      setAccessToken(null);
-      return false;
-    }
-    const json = (await res.json()) as { data: { accessToken: string } };
-    setAccessToken(json.data.accessToken);
-    return true;
-  } catch {
-    setAccessToken(null);
-    return false;
-  }
+  throw new APIError(message, response.status, code);
 }
 
 async function unwrap<T>(res: Response): Promise<T> {
@@ -108,40 +106,39 @@ async function unwrap<T>(res: Response): Promise<T> {
 
 // ── Types mirroring the backend contract ─────────────────
 
-export type Gender = 'MALE' | 'FEMALE';
-export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED' | 'DELETED';
-export type Role = 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+export type { ApprovalStatus, Gender, Role, VerificationContact, VerificationPlatform };
 
 export interface AuthUser {
   id: string;
   phone: string;
   fullName: string;
   gender: Gender;
+  username: string | null;
+  email: string | null;
   role: Role;
   approvalStatus: ApprovalStatus;
+  approvalDate: string | null;
+  createdAt: string;
 }
 
-export interface AuthResponse {
+/**
+ * What `complete-profile` and `me` return.
+ *
+ * `verificationContact` is `null` for anyone the server does not consider owed
+ * one — males, and females already approved. The client renders whichever it
+ * gets and never derives who qualifies.
+ */
+export interface ProfileResponse {
   user: AuthUser;
-  accessToken: string;
+  verificationContact: VerificationContact | null;
 }
 
-/** Note: no image URLs. The backend never sends any. */
 export interface PendingUser {
   id: string;
   fullName: string;
   phone: string;
   gender: Gender;
   createdAt: string;
-  hasSelfie: boolean;
-  hasNationalId: boolean;
-}
-
-export interface DecisionResult {
-  status: ApprovalStatus;
-  assetsDeleted: number;
-  assetsPending: number;
-  elevationConsumed: boolean;
 }
 
 export type EventStatus = 'OPEN' | 'CLOSED' | 'CANCELLED';
@@ -241,6 +238,20 @@ export interface AdminUserRow {
   createdAt: string;
 }
 
+/** The two roles the API will mint. `SUPER_ADMIN` is rejected server-side. */
+export type CreatableAdminRole = 'EVENTS_ADMIN' | 'VERIFICATION_ADMIN';
+
+export interface AdminInput {
+  phone: string;
+  fullName: string;
+  role: CreatableAdminRole;
+}
+
+export interface AdminPatch {
+  role?: CreatableAdminRole;
+  approvalStatus?: Extract<ApprovalStatus, 'APPROVED' | 'SUSPENDED'>;
+}
+
 export interface RegistrationRow {
   id: string;
   eventId: string;
@@ -249,17 +260,6 @@ export interface RegistrationRow {
   status?: string;
   user?: { fullName: string; phone: string } | null;
   event?: { movieName: string; startsAt: string } | null;
-}
-
-export interface LoginHistoryRow {
-  id: string;
-  userId?: string | null;
-  phone?: string | null;
-  success: boolean;
-  ipAddress?: string | null;
-  userAgent?: string | null;
-  createdAt: string;
-  user?: { fullName: string; phone: string } | null;
 }
 
 export interface AuditLogRow {
@@ -272,6 +272,8 @@ export interface AuditLogRow {
   createdAt: string;
   actor?: { fullName: string; phone: string } | null;
 }
+
+const COMPLETE_PROFILE_PATH = '/auth/complete-profile';
 
 /** Drops undefined/empty values so `?page=1&search=` never sends dead keys. */
 function queryString(params: Record<string, string | number | undefined>): string {
@@ -311,54 +313,42 @@ function eventBody(
   };
 }
 
+function jsonBody(value: unknown): { body: string; headers: Record<string, string> } {
+  return {
+    body: JSON.stringify(value),
+    headers: { 'Content-Type': 'application/json' },
+  };
+}
+
 export const api = {
+  /**
+   * Profile endpoints only.
+   *
+   * There is no register or login here, and there must never be: Supabase owns
+   * credentials, so a password reaching our own backend would mean the boundary
+   * had been broken. See `src/lib/supabase.ts`.
+   */
   auth: {
-    async register(input: {
-      phone: string;
-      password: string;
-      fullName: string;
-      gender: Gender;
-    }): Promise<AuthResponse> {
-      const res = await fetchAPI('/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-      });
-      const data = await unwrap<AuthResponse>(res);
-      setAccessToken(data.accessToken);
-      return data;
+    /**
+     * Creates the Prisma profile for the current Supabase identity.
+     *
+     * Idempotent server-side, which is what makes retrying it safe after a
+     * signup that got as far as creating the auth user and no further.
+     */
+    async completeProfile(): Promise<ProfileResponse> {
+      return unwrap<ProfileResponse>(
+        await fetchAPI(COMPLETE_PROFILE_PATH, { method: 'POST' }),
+      );
     },
 
-    async login(input: { phone: string; password: string }): Promise<AuthResponse> {
-      const res = await fetchAPI('/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-      });
-      const data = await unwrap<AuthResponse>(res);
-      setAccessToken(data.accessToken);
-      return data;
+    async me(): Promise<ProfileResponse> {
+      return unwrap<ProfileResponse>(await fetchAPI('/auth/me'));
     },
 
-    async me(): Promise<AuthUser> {
-      return unwrap<AuthUser>(await fetchAPI('/auth/me'));
-    },
-
-    async logout(): Promise<void> {
-      await fetchAPI('/auth/logout', { method: 'POST' }).catch(() => undefined);
-      setAccessToken(null);
-    },
-  },
-
-  identity: {
-    async upload(selfie: File, nationalId: File): Promise<{ uploaded: string[] }> {
-      const form = new FormData();
-      form.append('selfie', selfie);
-      form.append('nationalId', nationalId);
-
-      // No Content-Type header: the browser must set the multipart boundary.
-      const res = await fetchAPI('/uploads/identity', { method: 'POST', body: form });
-      return unwrap<{ uploaded: string[] }>(res);
+    async verificationContact(): Promise<VerificationContact | null> {
+      return unwrap<VerificationContact | null>(
+        await fetchAPI('/auth/verification-contact'),
+      );
     },
   },
 
@@ -394,57 +384,6 @@ export const api = {
   },
 
   admin: {
-    async listPending(): Promise<PendingUser[]> {
-      return unwrap<PendingUser[]>(await fetchAPI('/admin/users/pending'));
-    },
-
-    /** Exchanges the admin's password for an elevation scoped to one user. */
-    async elevate(
-      targetUserId: string,
-      password: string,
-    ): Promise<{ elevationToken: string; expiresAt: string }> {
-      const res = await fetchAPI(`/admin/users/${targetUserId}/elevate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-      return unwrap<{ elevationToken: string; expiresAt: string }>(res);
-    },
-
-    /**
-     * Fetches an identity image as a blob URL.
-     *
-     * The elevation token goes in a header, never a query string — query
-     * params leak into browser history and server access logs. The returned
-     * blob: URL is local to this document and must be revoked after use.
-     */
-    async fetchIdentityImage(
-      targetUserId: string,
-      kind: 'selfie' | 'national-id',
-      elevationToken: string,
-    ): Promise<string> {
-      const res = await fetchAPI(`/admin/users/${targetUserId}/identity/${kind}`, {
-        elevationToken,
-      });
-      return URL.createObjectURL(await res.blob());
-    },
-
-    async approve(targetUserId: string, elevationToken: string): Promise<DecisionResult> {
-      const res = await fetchAPI(`/admin/users/${targetUserId}/approve`, {
-        method: 'POST',
-        elevationToken,
-      });
-      return unwrap<DecisionResult>(res);
-    },
-
-    async reject(targetUserId: string, elevationToken: string): Promise<DecisionResult> {
-      const res = await fetchAPI(`/admin/users/${targetUserId}/reject`, {
-        method: 'POST',
-        elevationToken,
-      });
-      return unwrap<DecisionResult>(res);
-    },
-
     /** Admin event CRUD. Unlike `api.events`, this is not gender-scoped. */
     events: {
       async list(query: PageQuery = {}): Promise<EventListResponse> {
@@ -477,6 +416,80 @@ export const api = {
       },
     },
 
+    /**
+     * Member verification.
+     *
+     * Approve and reject carry no evidence and no documents: the decision was
+     * already made off-platform, between the member and the verifying admin's
+     * social account. This records the outcome, nothing more.
+     */
+    verification: {
+      async listPending(query: PageQuery = {}): Promise<Paginated<PendingUser>> {
+        const qs = queryString({ page: query.page, pageSize: query.pageSize });
+        return unwrap<Paginated<PendingUser>>(await fetchAPI(`/admin/users/pending${qs}`));
+      },
+
+      async approve(userId: string): Promise<{ approvalStatus: ApprovalStatus }> {
+        return unwrap<{ approvalStatus: ApprovalStatus }>(
+          await fetchAPI(`/admin/users/${userId}/approve`, { method: 'POST' }),
+        );
+      },
+
+      async reject(userId: string): Promise<{ approvalStatus: ApprovalStatus }> {
+        return unwrap<{ approvalStatus: ApprovalStatus }>(
+          await fetchAPI(`/admin/users/${userId}/reject`, { method: 'POST' }),
+        );
+      },
+
+      async getContact(): Promise<VerificationContact | null> {
+        return unwrap<VerificationContact | null>(
+          await fetchAPI('/admin/verification-contact'),
+        );
+      },
+
+      async updateContact(contact: VerificationContact): Promise<VerificationContact> {
+        const { body, headers } = jsonBody(contact);
+        return unwrap<VerificationContact>(
+          await fetchAPI('/admin/verification-contact', { method: 'PUT', body, headers }),
+        );
+      },
+    },
+
+    /**
+     * Admin account management — SUPER_ADMIN only.
+     *
+     * `SUPER_ADMIN` is absent from `CreatableAdminRole` because the API rejects
+     * it: "exactly one account, ever" cannot hold if the endpoint can mint more.
+     * Every write here can also come back 409 `LAST_SUPER_ADMIN`, whose message
+     * callers show verbatim.
+     */
+    admins: {
+      async list(query: PageQuery = {}): Promise<Paginated<AdminUserRow>> {
+        const qs = queryString({ page: query.page, pageSize: query.pageSize });
+        return unwrap<Paginated<AdminUserRow>>(await fetchAPI(`/admin/admins${qs}`));
+      },
+
+      async create(input: AdminInput): Promise<AdminUserRow> {
+        const { body, headers } = jsonBody(input);
+        return unwrap<AdminUserRow>(
+          await fetchAPI('/admin/admins', { method: 'POST', body, headers }),
+        );
+      },
+
+      async update(id: string, patch: AdminPatch): Promise<AdminUserRow> {
+        const { body, headers } = jsonBody(patch);
+        return unwrap<AdminUserRow>(
+          await fetchAPI(`/admin/admins/${id}`, { method: 'PATCH', body, headers }),
+        );
+      },
+
+      async revoke(id: string): Promise<AdminUserRow> {
+        return unwrap<AdminUserRow>(
+          await fetchAPI(`/admin/admins/${id}`, { method: 'DELETE' }),
+        );
+      },
+    },
+
     async dashboardStats(): Promise<DashboardStats> {
       return unwrap<DashboardStats>(await fetchAPI('/admin/dashboard/stats'));
     },
@@ -489,11 +502,6 @@ export const api = {
     async listRegistrations(query: PageQuery = {}): Promise<Paginated<RegistrationRow>> {
       const qs = queryString({ page: query.page, pageSize: query.pageSize });
       return unwrap<Paginated<RegistrationRow>>(await fetchAPI(`/admin/registrations${qs}`));
-    },
-
-    async listLoginHistory(query: PageQuery = {}): Promise<Paginated<LoginHistoryRow>> {
-      const qs = queryString({ page: query.page, pageSize: query.pageSize });
-      return unwrap<Paginated<LoginHistoryRow>>(await fetchAPI(`/admin/login-history${qs}`));
     },
 
     async listAuditLogs(query: PageQuery = {}): Promise<Paginated<AuditLogRow>> {
