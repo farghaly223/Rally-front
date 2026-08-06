@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserProfile, VERIFICATION_PLATFORM_LABEL, VerificationContact, isVerified } from '../types';
 import { ReportModal } from './ReportModal';
+import { LegalModal, type LegalPage } from './legal/LegalModal';
 
 interface UserProfileViewProps {
   user: UserProfile;
@@ -21,6 +22,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
 }) => {
   const verified = isVerified(user);
   const [reporting, setReporting] = useState(false);
+  const [legalPage, setLegalPage] = useState<LegalPage | null>(null);
 
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100 pt-20 md:pt-28 pb-32 px-5 md:px-10 max-w-4xl mx-auto">
@@ -139,6 +141,51 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
           </div>
         )}
 
+        {/* Legal and safety.
+            Reachable after signup too, not only from the consent checkbox on
+            the registration form — agreeing once should not be the only time a
+            member can read what they agreed to. */}
+        <div className="mt-8 pt-6 border-t border-zinc-800">
+          <div className="flex items-center gap-4 mb-4">
+            <span className="material-symbols-outlined text-3xl text-zinc-400">gavel</span>
+            <div>
+              <h4 className="font-headline-md text-base text-white">Legal &amp; Safety</h4>
+              <p className="font-body-md text-xs text-zinc-400 mt-0.5">
+                The policies and safety rules that apply to every Rally member.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setLegalPage('terms');
+              }}
+              className="px-5 py-2.5 rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors font-headline-md text-xs uppercase tracking-wider cursor-pointer"
+            >
+              Terms of Service
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLegalPage('privacy');
+              }}
+              className="px-5 py-2.5 rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors font-headline-md text-xs uppercase tracking-wider cursor-pointer"
+            >
+              Privacy Policy
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLegalPage('safety');
+              }}
+              className="px-5 py-2.5 rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors font-headline-md text-xs uppercase tracking-wider cursor-pointer"
+            >
+              Safety Guidelines
+            </button>
+          </div>
+        </div>
+
         {/* Actions */}
         <div className="mt-8 pt-6 border-t border-zinc-800 flex justify-end">
           <button
@@ -151,6 +198,13 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
       </div>
 
       {reporting && <ReportModal targetType="USER" onClose={() => setReporting(false)} />}
+
+      <LegalModal
+        page={legalPage}
+        onClose={() => {
+          setLegalPage(null);
+        }}
+      />
     </div>
   );
 };

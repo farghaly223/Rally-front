@@ -7,6 +7,7 @@ import {
   type SignUpInput,
 } from '../lib/auth';
 import type { Gender, UserProfile, VerificationContact } from '../types';
+import { LegalModal, type LegalPage } from './legal/LegalModal';
 
 interface JoinPremiereProps {
   /**
@@ -59,6 +60,22 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Consent to the legal and safety documents, required to register.
+   *
+   * Gates the submit button in register mode only — a returning member logging
+   * in agreed at signup and is not asked again. Reset when the form switches
+   * modes so an unchecked box never carries over as if it had been ticked.
+   */
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [openLegalPage, setOpenLegalPage] = useState<LegalPage | null>(null);
+
+  /** Opens a document without submitting the form the link sits inside. */
+  const openLegal = (page: LegalPage) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    setOpenLegalPage(page);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -83,6 +100,16 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
       } else {
         if (gender === '') {
           setError('Please select your gender.');
+          return;
+        }
+
+        // The button is disabled without consent, but a form can also be
+        // submitted by pressing Enter in a field, so the condition is checked
+        // here too rather than trusted to the button's disabled state.
+        if (!agreedToTerms) {
+          setError(
+            'Please read and agree to the Terms of Service, Privacy Policy and Safety Guidelines.',
+          );
           return;
         }
 
@@ -330,6 +357,52 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
             </div>
           )}
 
+          {!isLoginMode && (
+            <div className="flex items-start gap-3">
+              <input
+                className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-white/20 bg-white/5 accent-[#e50914] focus:outline-none focus:ring-2 focus:ring-[#e50914]/50"
+                id="agreeToTerms"
+                type="checkbox"
+                checked={agreedToTerms}
+                onChange={(e) => {
+                  setAgreedToTerms(e.target.checked);
+                  setError(null);
+                }}
+                required={!isLoginMode}
+              />
+              <label
+                className="font-body-md cursor-pointer text-sm leading-relaxed text-[#c9c6c5]"
+                htmlFor="agreeToTerms"
+              >
+                I have read and agree to the{' '}
+                <button
+                  type="button"
+                  className="cursor-pointer text-[#ffb4aa] underline transition-colors hover:text-[#e50914]"
+                  onClick={openLegal('terms')}
+                >
+                  Terms of Service
+                </button>
+                ,{' '}
+                <button
+                  type="button"
+                  className="cursor-pointer text-[#ffb4aa] underline transition-colors hover:text-[#e50914]"
+                  onClick={openLegal('privacy')}
+                >
+                  Privacy Policy
+                </button>{' '}
+                and{' '}
+                <button
+                  type="button"
+                  className="cursor-pointer text-[#ffb4aa] underline transition-colors hover:text-[#e50914]"
+                  onClick={openLegal('safety')}
+                >
+                  Safety Guidelines
+                </button>
+                .
+              </label>
+            </div>
+          )}
+
           {error && (
             <div
               role="alert"
@@ -343,7 +416,7 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
           <button
             className="btn-primary font-headline-md mt-4 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg py-4 text-lg disabled:cursor-not-allowed disabled:opacity-60"
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || (!isLoginMode && !agreedToTerms)}
           >
             {isSubmitting
               ? 'Please wait…'
@@ -363,6 +436,10 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
               onClick={() => {
                 setIsLoginMode(!isLoginMode);
                 setError(null);
+                // Consent belongs to a registration attempt, not to the form.
+                // Leaving it ticked across a switch to login and back would
+                // present a box the member never actually read and agreed to.
+                setAgreedToTerms(false);
               }}
             >
               {isLoginMode ? 'Register here' : 'Log in'}
@@ -370,6 +447,15 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUn
           </p>
         </form>
       </div>
+
+      {/* Rendered outside the form so a document can be opened and closed
+          without submitting anything or losing what has been typed. */}
+      <LegalModal
+        page={openLegalPage}
+        onClose={() => {
+          setOpenLegalPage(null);
+        }}
+      />
     </div>
   );
 };
