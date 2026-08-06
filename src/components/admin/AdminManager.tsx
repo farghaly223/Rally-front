@@ -5,7 +5,7 @@ import {
   type AdminUserRow,
   type CreatableAdminRole,
 } from '../../api/client';
-import type { ApprovalStatus, Role } from '../../types';
+import type { ApprovalStatus, Gender, Role } from '../../types';
 import type { ToastKind } from '../ui/Toast';
 
 interface AdminManagerProps {
@@ -74,8 +74,29 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [fullName, setFullName] = useState('');
+  /**
+   * The initial password for the new account.
+   *
+   * Lives in component state for the lifetime of the form and nowhere else: it
+   * is cleared on success, never persisted, and never passed to `notify` — a
+   * toast is rendered into the DOM and would be trivially screenshot-able over
+   * someone's shoulder.
+   */
+  const [password, setPassword] = useState('');
+  /** Local only. Prevents a typo becoming an account nobody can sign in to. */
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  /**
+   * Deliberately starts empty rather than defaulting to a gender.
+   *
+   * Gender decides which events an account can see, so a default would silently
+   * assign one to whoever forgot to touch this field. `required` on the control
+   * makes the omission visible instead.
+   */
+  const [gender, setGender] = useState<Gender | ''>('');
   const [role, setRole] = useState<CreatableAdminRole>('EVENTS_ADMIN');
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -104,17 +125,57 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
     async (e: React.FormEvent) => {
       e.preventDefault();
       setFormError(null);
+
+      // The `required` attribute covers this in a browser; the guard is here
+      // because an empty string is not a `Gender` and the API would reject it
+      // with a less useful message.
+      if (gender === '') {
+        setFormError('Select a gender for the new admin.');
+        return;
+      }
+
+      /*
+       * Both password checks are convenience, not security.
+       *
+       * The server enforces the same 12-character minimum in
+       * `createAdminSchema` and is the only thing that decides whether an
+       * account is created. These run first so a typo is caught before a round
+       * trip, and so the mismatch case — which the server cannot detect, since
+       * it never sees the confirmation — is caught at all.
+       */
+      if (password !== confirmPassword) {
+        setFormError('The two passwords do not match.');
+        return;
+      }
+
+      if (password.length < 12) {
+        setFormError('Password must be at least 12 characters.');
+        return;
+      }
+
       setCreating(true);
       try {
         const created = await api.admin.admins.create({
+          email: email.trim().toLowerCase(),
+          // Not trimmed. Leading and trailing spaces are legitimate password
+          // characters, and silently stripping them here would produce a
+          // credential that does not match what the person typed and was told.
+          password,
           phone: phone.trim(),
           fullName: fullName.trim(),
+          gender,
           role,
         });
         setAdmins((prev) => [created, ...prev]);
         setTotal((t) => t + 1);
+        setEmail('');
         setPhone('');
         setFullName('');
+        setGender('');
+        setPassword('');
+        setConfirmPassword('');
+        setShowPassword(false);
+        // The message names the admin and the role, never the password.
         notify('success', `${created.fullName} added as ${ROLE_LABEL[created.role]}.`);
       } catch (err) {
         const message = err instanceof APIError ? err.message : 'Could not create the admin.';
@@ -124,7 +185,7 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
         setCreating(false);
       }
     },
-    [fullName, notify, phone, role],
+    [confirmPassword, email, fullName, gender, notify, password, phone, role],
   );
 
   /** Replaces the row with whatever the server returned — never a local guess. */
@@ -198,7 +259,9 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
         <div className="mb-6 border-b border-zinc-800/80 pb-4">
           <h2 className="font-headline-md text-xl text-white">Appoint an Admin</h2>
           <p className="font-body-md mt-1 text-sm text-zinc-400">
-            The account must already exist. Super Admin cannot be granted here — the API
+            This creates the account. The email and the password you set below are the
+            credentials they sign in with — give them to the new admin directly, and have
+            them change the password once they are in. Super Admin cannot be granted: the API
             refuses it, so there is exactly one, seeded directly.
           </p>
         </div>
@@ -216,7 +279,7 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
           onSubmit={(e) => {
             void handleCreate(e);
           }}
-          className="grid grid-cols-1 gap-5 md:grid-cols-[1fr_1fr_240px_auto] md:items-end"
+          className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3"
         >
           <div className="flex flex-col gap-2">
             <label className={labelClass} htmlFor="am-name">
@@ -236,6 +299,24 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
           </div>
 
           <div className="flex flex-col gap-2">
+            <label className={labelClass} htmlFor="am-email">
+              Email
+            </label>
+            <input
+              id="am-email"
+              className={inputClass}
+              type="email"
+              required
+              autoComplete="off"
+              placeholder="nour@rally.example"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+              }}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
             <label className={labelClass} htmlFor="am-phone">
               Phone
             </label>
@@ -250,6 +331,96 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
                 setPhone(e.target.value);
               }}
             />
+          </div>
+
+          {/*
+            `autoComplete="new-password"` on both, so a browser offers to
+            generate one rather than autofilling the *signed-in super admin's*
+            own saved credential into the field that creates someone else's
+            account — which is what `current-password` or an omitted attribute
+            invites.
+          */}
+          <div className="flex flex-col gap-2">
+            <label className={labelClass} htmlFor="am-password">
+              Password
+            </label>
+            <div className="relative">
+              <input
+                id="am-password"
+                className={`${inputClass} pr-12`}
+                type={showPassword ? 'text' : 'password'}
+                required
+                minLength={12}
+                autoComplete="new-password"
+                placeholder="At least 12 characters"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPassword((v) => !v);
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 transition-colors hover:text-white"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                <span className="material-symbols-outlined text-xl" aria-hidden="true">
+                  {showPassword ? 'visibility_off' : 'visibility'}
+                </span>
+              </button>
+            </div>
+            <p className="font-body-md text-xs text-zinc-500">
+              Share this with the new admin directly. Rally does not email it.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className={labelClass} htmlFor="am-password-confirm">
+              Confirm Password
+            </label>
+            <input
+              id="am-password-confirm"
+              className={inputClass}
+              type={showPassword ? 'text' : 'password'}
+              required
+              minLength={12}
+              autoComplete="new-password"
+              placeholder="Re-enter the password"
+              value={confirmPassword}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+              }}
+            />
+            {confirmPassword.length > 0 && confirmPassword !== password && (
+              <p className="font-body-md text-xs text-red-400">Passwords do not match.</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className={labelClass} htmlFor="am-gender">
+              Gender
+            </label>
+            <select
+              id="am-gender"
+              className={`${inputClass} cursor-pointer appearance-none`}
+              required
+              value={gender}
+              onChange={(e) => {
+                setGender(e.target.value as Gender | '');
+              }}
+            >
+              <option className="bg-zinc-900" value="" disabled>
+                Select…
+              </option>
+              <option className="bg-zinc-900" value="FEMALE">
+                Female
+              </option>
+              <option className="bg-zinc-900" value="MALE">
+                Male
+              </option>
+            </select>
           </div>
 
           <div className="flex flex-col gap-2">
@@ -272,14 +443,16 @@ export const AdminManager: React.FC<AdminManagerProps> = ({ notify }) => {
             </select>
           </div>
 
-          <button
-            type="submit"
-            disabled={creating}
-            className="btn-primary font-headline-md flex cursor-pointer items-center justify-center gap-2 rounded-full px-8 py-3.5 text-xs uppercase tracking-wider shadow-lg shadow-indigo-600/30 disabled:opacity-50"
-          >
-            {creating ? 'Adding…' : 'Add Admin'}
-            <span className="material-symbols-outlined text-base">person_add</span>
-          </button>
+          <div className="flex items-end">
+            <button
+              type="submit"
+              disabled={creating}
+              className="btn-primary font-headline-md flex w-full cursor-pointer items-center justify-center gap-2 rounded-full px-8 py-3.5 text-xs uppercase tracking-wider shadow-lg shadow-indigo-600/30 disabled:opacity-50"
+            >
+              {creating ? 'Adding…' : 'Add Admin'}
+              <span className="material-symbols-outlined text-base">person_add</span>
+            </button>
+          </div>
         </form>
 
         <p className="font-body-md mt-4 text-xs text-zinc-500">

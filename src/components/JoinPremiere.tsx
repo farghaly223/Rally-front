@@ -1,10 +1,27 @@
 import React, { useState } from 'react';
-import { APIError } from '../api/client';
-import { authErrorMessage, signIn, signUp, type SignUpInput } from '../lib/auth';
-import type { Gender, UserProfile } from '../types';
+import {
+  authErrorMessage,
+  isEmailNotVerified,
+  signIn,
+  signUp,
+  type SignUpInput,
+} from '../lib/auth';
+import type { Gender, UserProfile, VerificationContact } from '../types';
 
 interface JoinPremiereProps {
-  onSuccess: (user: UserProfile) => void;
+  /**
+   * The contact is handed straight through from the signup response rather
+   * than refetched. A female lands on the verification screen already knowing
+   * who to message, and the app never briefly shows her a screen telling her
+   * to contact nobody.
+   */
+  onSuccess: (user: UserProfile, verificationContact: VerificationContact | null) => void;
+  /**
+   * Raised when the account exists but its address is unconfirmed — after
+   * signup, and on a login whose session Supabase or our backend refuses for
+   * that reason. The parent swaps in the confirmation screen.
+   */
+  onEmailUnverified: (email: string) => void;
 }
 
 /** `username` is display-only; the backend does not model it. */
@@ -28,11 +45,12 @@ function toProfile(
   };
 }
 
-export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess }) => {
+export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess, onEmailUnverified }) => {
   const [isLoginMode, setIsLoginMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -48,7 +66,7 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess }) => {
 
     try {
       if (isLoginMode) {
-        const { user } = await signIn(phone, password);
+        const { user, verificationContact } = await signIn(email, password);
         setPassword('');
         onSuccess(
           toProfile(
@@ -60,15 +78,33 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess }) => {
             user.approvalStatus,
             username,
           ),
+          verificationContact,
         );
       } else {
         if (gender === '') {
           setError('Please select your gender.');
           return;
         }
-        const input: SignUpInput = { phone, password, fullName, gender };
-        const { user } = await signUp(input);
+
+        const input: SignUpInput = {
+          email,
+          password,
+          fullName,
+          phone,
+          gender,
+          ...(username.trim() ? { username: username.trim() } : {}),
+        };
+        const result = await signUp(input);
         setPassword('');
+
+        // The ordinary path when confirmations are on: Supabase issues no
+        // session until the link is opened, so there is no profile to hand up.
+        if (result.needsEmailConfirmation || !result.profile) {
+          onEmailUnverified(result.email);
+          return;
+        }
+
+        const { user, verificationContact } = result.profile;
         onSuccess(
           toProfile(
             user.id,
@@ -79,9 +115,18 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess }) => {
             user.approvalStatus,
             username,
           ),
+          verificationContact,
         );
       }
     } catch (err) {
+      // An unverified address is not a failed login — the credentials were
+      // right. Showing the error here would leave the member retrying a form
+      // that cannot succeed until they enter the emailed code.
+      if (isEmailNotVerified(err)) {
+        setPassword('');
+        onEmailUnverified(email.trim().toLowerCase());
+        return;
+      }
       setError(authErrorMessage(err));
     } finally {
       setIsSubmitting(false);
@@ -141,27 +186,57 @@ export const JoinPremiere: React.FC<JoinPremiereProps> = ({ onSuccess }) => {
           )}
 
           <div className="flex flex-col gap-2">
-            <label className="font-label-caps text-xs text-[#c9c6c5]" htmlFor="phone">
-              Phone Number
+            <label className="font-label-caps text-xs text-[#c9c6c5]" htmlFor="email">
+              Email
             </label>
             <div className="relative flex items-center">
               <span className="material-symbols-outlined absolute left-3 text-xl text-[#c9c6c5]">
-                call
+                mail
               </span>
               <input
                 className="input-glass w-full rounded py-3 pl-10 pr-4 font-body-md text-[#e5e2e1] placeholder-[#c9c6c5]/50"
-                id="phone"
-                placeholder="+201234567890"
-                value={phone}
+                id="email"
+                placeholder="you@example.com"
+                value={email}
                 onChange={(e) => {
-                  setPhone(e.target.value);
+                  setEmail(e.target.value);
                 }}
                 required
-                autoComplete="tel"
-                type="tel"
+                autoComplete="email"
+                type="email"
               />
             </div>
           </div>
+
+          {!isLoginMode && (
+            <div className="flex flex-col gap-2">
+              <label className="font-label-caps text-xs text-[#c9c6c5]" htmlFor="phone">
+                Phone Number
+              </label>
+              <div className="relative flex items-center">
+                <span className="material-symbols-outlined absolute left-3 text-xl text-[#c9c6c5]">
+                  call
+                </span>
+                <input
+                  className="input-glass w-full rounded py-3 pl-10 pr-4 font-body-md text-[#e5e2e1] placeholder-[#c9c6c5]/50"
+                  id="phone"
+                  placeholder="+201234567890"
+                  value={phone}
+                  onChange={(e) => {
+                    setPhone(e.target.value);
+                  }}
+                  required={!isLoginMode}
+                  autoComplete="tel"
+                  type="tel"
+                />
+              </div>
+              {/* Said plainly, because it is never verified and must not look
+                  as though it were. */}
+              <p className="font-body-md text-xs text-[#c9c6c5]/60">
+                For your profile only — we never send you a text message.
+              </p>
+            </div>
+          )}
 
           {!isLoginMode && (
             <div className="flex flex-col gap-2">

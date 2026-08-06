@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
-import {
-  formatEventDateTime,
-  formatVenue,
-  type RallyEvent,
-  type TicketBooking,
-} from '../types';
+import { formatEventDateTime, formatVenue, type RallyEvent } from '../types';
+import { APIError, type MemberRegistration } from '../api/client';
 
 interface TicketModalProps {
   event: RallyEvent;
   onClose: () => void;
-  onConfirmBooking: (event: RallyEvent) => TicketBooking;
+  /**
+   * Books the seat, server-side.
+   *
+   * Async and rejectable: capacity is decided in a locked transaction on the
+   * server, so "this screening is full" can only be known by asking. The modal
+   * renders whatever refusal comes back rather than pre-judging from
+   * `registeredCount`, which is a snapshot that may already be stale.
+   */
+  onConfirmBooking: (event: RallyEvent) => Promise<MemberRegistration>;
   onNavigateToBookings: () => void;
   /**
    * The server withheld this event's venue and timing.
@@ -31,15 +35,34 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   detailLocked = false,
   onRequireVerification,
 }) => {
-  const [issuedTicket, setIssuedTicket] = useState<TicketBooking | null>(null);
+  const [issuedTicket, setIssuedTicket] = useState<MemberRegistration | null>(null);
   const [activeTab, setActiveTab] = useState<'rsvp' | 'chat'>('rsvp');
+  const [claiming, setClaiming] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
 
   const handleClaimPass = (): void => {
     if (detailLocked && onRequireVerification) {
       onRequireVerification();
       return;
     }
-    setIssuedTicket(onConfirmBooking(event));
+
+    setClaimError(null);
+    setClaiming(true);
+
+    void (async () => {
+      try {
+        setIssuedTicket(await onConfirmBooking(event));
+      } catch (err) {
+        // The server's own wording: "This screening is full", "Registration has
+        // closed". Each tells the member something different about what to do
+        // next, so none of them is worth flattening into a generic failure.
+        setClaimError(
+          err instanceof APIError ? err.message : 'Could not complete your RSVP. Try again.',
+        );
+      } finally {
+        setClaiming(false);
+      }
+    })();
   };
 
   const isFull = event.registeredCount >= event.capacity;
@@ -259,23 +282,40 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                     </div>
                   )}
 
+                  {/*
+                    The server's own words. A 409 here is real information the
+                    member needs — "This screening is full" means the last seat
+                    went to someone else between opening this modal and pressing
+                    the button, and the stale count above it does not say that.
+                  */}
+                  {claimError && (
+                    <div className="flex items-center gap-2.5 rounded-2xl border border-red-500/30 bg-red-500/10 p-3">
+                      <span className="material-symbols-outlined text-lg text-red-400">
+                        error
+                      </span>
+                      <p className="text-xs text-red-300">{claimError}</p>
+                    </div>
+                  )}
+
                   <button
                     type="button"
                     onClick={handleClaimPass}
-                    disabled={!detailLocked && (event.status !== 'OPEN' || isFull)}
+                    disabled={claiming || (!detailLocked && (event.status !== 'OPEN' || isFull))}
                     className="btn-primary font-headline-md flex w-full cursor-pointer items-center justify-center gap-2 rounded-full py-3.5 text-xs uppercase tracking-wider shadow-lg shadow-indigo-600/30 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <span>
-                      {detailLocked
-                        ? 'Verify Identity to Unlock'
-                        : event.status !== 'OPEN'
-                          ? 'Registration Closed'
-                          : isFull
-                            ? 'Screening Full'
-                            : "RSVP — I'm Attending"}
+                      {claiming
+                        ? 'Reserving Your Seat…'
+                        : detailLocked
+                          ? 'Verify Identity to Unlock'
+                          : event.status !== 'OPEN'
+                            ? 'Registration Closed'
+                            : isFull
+                              ? 'Screening Full'
+                              : "RSVP — I'm Attending"}
                     </span>
                     <span className="material-symbols-outlined text-lg">
-                      {detailLocked ? 'lock_open' : 'check_circle'}
+                      {claiming ? 'hourglass_top' : detailLocked ? 'lock_open' : 'check_circle'}
                     </span>
                   </button>
                 </div>
@@ -294,7 +334,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                     You&apos;re Attending This Screening
                   </h3>
                   <p className="font-body-md mt-1 max-w-md text-xs text-zinc-400">
-                    You are now listed in the Rally squad for {issuedTicket.eventTitle}.
+                    You are now listed in the Rally squad for {issuedTicket.event.movieName}.
                   </p>
                 </div>
 
@@ -302,8 +342,13 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                   <span className="block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
                     Squad RSVP Code
                   </span>
+                  {/*
+                    The registration's real id, matching MyBookings. The old
+                    `RLY-######` was `Math.random()` and matched nothing on the
+                    server, so an admin could not have looked it up.
+                  */}
                   <span className="text-sm font-bold tracking-widest text-indigo-400">
-                    {issuedTicket.bookingCode}
+                    {issuedTicket.id.slice(0, 8)}
                   </span>
                 </div>
 
@@ -320,9 +365,9 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                     </a>
                   )}
 
-                  {issuedTicket.whatsappInviteLink && (
+                  {issuedTicket.event.whatsappInviteLink && (
                     <a
-                      href={issuedTicket.whatsappInviteLink}
+                      href={issuedTicket.event.whatsappInviteLink}
                       target="_blank"
                       rel="noreferrer"
                       className="font-headline-md flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 py-3 text-xs font-bold uppercase tracking-wider text-emerald-400 transition-all hover:bg-emerald-500/20"

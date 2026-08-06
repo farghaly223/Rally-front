@@ -46,24 +46,38 @@ export const DashboardStats: React.FC = () => {
     );
   }
 
+  /*
+   * `?? 0` on every value, deliberately.
+   *
+   * These come off the wire, so the compiler's guarantee that they are numbers
+   * is only as good as the response. A field the server has not sent — a newly
+   * added stat against an older deployment, say — arrives as `undefined`, and
+   * `undefined.toLocaleString()` throws during render. That throw used to
+   * unmount the whole React root and leave a black page.
+   */
   const tiles: Tile[] = [
-    { label: 'Members', value: stats.totalUsers, icon: 'group', accent: 'text-indigo-400' },
+    { label: 'Members', value: stats.totalUsers ?? 0, icon: 'group', accent: 'text-indigo-400' },
     {
       label: 'Pending Approvals',
-      value: stats.pendingApprovals,
+      value: stats.pendingApprovals ?? 0,
       icon: 'pending_actions',
       accent: 'text-amber-400',
     },
-    { label: 'Screenings', value: stats.totalEvents, icon: 'movie', accent: 'text-indigo-400' },
+    {
+      label: 'Screenings',
+      value: stats.totalEvents ?? 0,
+      icon: 'movie',
+      accent: 'text-indigo-400',
+    },
     {
       label: 'Open Screenings',
-      value: stats.openEvents,
+      value: stats.openEvents ?? 0,
       icon: 'event_available',
       accent: 'text-emerald-400',
     },
     {
       label: 'Registrations',
-      value: stats.totalRegistrations,
+      value: stats.totalRegistrations ?? 0,
       icon: 'how_to_reg',
       accent: 'text-emerald-400',
     },

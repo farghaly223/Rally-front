@@ -50,10 +50,13 @@ async function readError(
 /**
  * Every request to our backend, with the Supabase access token attached.
  *
- * Two recoverable refusals are retried exactly once each, and only once:
+ * Three recoverable refusals are retried exactly once each, and only once:
  *
  *  - **401** — the token expired. Supabase refreshes it; a failed refresh means
  *    the session is genuinely dead and the error propagates rather than looping.
+ *  - **403 EMAIL_NOT_VERIFIED** — the token predates confirmation. A refresh
+ *    mints one carrying the current state; if that is refused too, the address
+ *    really is unconfirmed and the caller sends the member to enter their code.
  *  - **409 PROFILE_INCOMPLETE** — signup created the auth identity but the
  *    profile call did not land. Recreating the profile is idempotent server-
  *    side, so retrying is safe and turns a permanently broken shell into a
@@ -84,6 +87,25 @@ async function fetchAPI(path: string, init: FetchOptions = {}): Promise<Response
       }
     }
 
+    // A 403 EMAIL_NOT_VERIFIED can be nothing more than a stale token.
+    //
+    // An access token is a snapshot: `email_confirmed_at` is baked in when it is
+    // minted, so a token issued before confirmation keeps saying "unconfirmed"
+    // for its full hour even though the account is confirmed. That happens on
+    // every path where the address is confirmed somewhere other than this tab —
+    // an admin confirming from the dashboard, or a code entered on another
+    // device.
+    //
+    // Refreshing mints a token carrying the current truth. Only if the fresh one
+    // is *also* refused is the address genuinely unconfirmed, and only then does
+    // the error propagate to put the member on the code-entry screen.
+    if (response.status === 403 && code === 'EMAIL_NOT_VERIFIED') {
+      const { data } = await supabase.auth.refreshSession();
+      if (data.session) {
+        return fetchAPI(path, { ...init, retried: true });
+      }
+    }
+
     // Re-running complete-profile would recurse into this same branch, so it is
     // excluded by path rather than relying on the flag alone.
     if (
@@ -102,6 +124,34 @@ async function fetchAPI(path: string, init: FetchOptions = {}): Promise<Response
 async function unwrap<T>(res: Response): Promise<T> {
   const json = (await res.json()) as { data: T };
   return json.data;
+}
+
+/**
+ * Unwraps a paginated envelope, refusing anything that is not one.
+ *
+ * `unwrap` casts the body to whatever the caller claims, which makes the
+ * compiler's guarantee only as good as the server's response. When
+ * `GET /admin/admins` returned a bare array instead of `{ items, total }`, the
+ * cast to `Paginated<T>` succeeded silently, `.items` came back `undefined`, and
+ * the component died on `undefined.length` — taking the whole React root with it
+ * and leaving a black page.
+ *
+ * A wrong shape now surfaces as an ordinary `APIError`, which every admin screen
+ * already catches and renders as a message. A backend that changes a list
+ * contract should produce a visible error, not a blank screen.
+ */
+async function unwrapPage<T>(res: Response): Promise<Paginated<T>> {
+  const page = await unwrap<Paginated<T>>(res);
+
+  if (!page || !Array.isArray(page.items)) {
+    throw new APIError(
+      'The server returned an unexpected response for this list.',
+      res.status,
+      'MALFORMED_RESPONSE',
+    );
+  }
+
+  return page;
 }
 
 // ── Types mirroring the backend contract ─────────────────
@@ -242,14 +292,61 @@ export interface AdminUserRow {
 export type CreatableAdminRole = 'EVENTS_ADMIN' | 'VERIFICATION_ADMIN';
 
 export interface AdminInput {
+  /** The Supabase credential. Required — the new admin signs in with it. */
+  email: string;
+  /**
+   * The initial password, chosen by the appointing super admin.
+   *
+   * Forwarded to Supabase by the backend and stored nowhere else — Rally has no
+   * password column. It is held in component state only until the form submits,
+   * and is never written to localStorage or included in a toast.
+   *
+   * Whoever creates the account must communicate this to the new admin out of
+   * band, and it should be changed on first sign-in: until then, two people know
+   * it.
+   */
+  password: string;
   phone: string;
   fullName: string;
+  gender: Gender;
   role: CreatableAdminRole;
 }
 
 export interface AdminPatch {
   role?: CreatableAdminRole;
   approvalStatus?: Extract<ApprovalStatus, 'APPROVED' | 'SUSPENDED'>;
+}
+
+/**
+ * A registration as the server owns it.
+ *
+ * `event` is nested because a bookings list needs the film and venue, and the
+ * server sends it in one response rather than making the client fetch each one.
+ */
+export interface MemberRegistration {
+  id: string;
+  eventId: string;
+  status: 'CONFIRMED' | 'CANCELLED' | 'WAITLISTED' | 'ATTENDED' | 'NO_SHOW';
+  createdAt: string;
+  cancelledAt: string | null;
+  event: {
+    id: string;
+    movieName: string;
+    cinema: string | null;
+    location: string | null;
+    googleMapsUrl: string | null;
+    startsAt: string | null;
+    endsAt: string | null;
+    registrationOpenAt: string | null;
+    registrationCloseAt: string | null;
+    bookingUrl: string | null;
+    whatsappInviteLink: string | null;
+    posterUrl: string | null;
+    capacity: number;
+    registeredCount: number;
+    gender: Gender;
+    status: EventStatus;
+  };
 }
 
 export interface RegistrationRow {
@@ -381,6 +478,33 @@ export const api = {
     async get(id: string): Promise<RallyEvent> {
       return unwrap<RallyEvent>(await fetchAPI(`/events/${id}`));
     },
+
+    /**
+     * Books a seat.
+     *
+     * Capacity is decided entirely server-side, inside a row-locked transaction.
+     * The client sends no count and no seat number — there is nothing here to
+     * forge, and a full screening comes back as a 409 rather than a silently
+     * oversold booking. Calling it twice returns the existing registration, so a
+     * double-tapped button is harmless.
+     */
+    async register(eventId: string): Promise<MemberRegistration> {
+      return unwrap<MemberRegistration>(
+        await fetchAPI(`/events/${eventId}/register`, { method: 'POST' }),
+      );
+    },
+
+    async cancelRegistration(eventId: string): Promise<MemberRegistration> {
+      return unwrap<MemberRegistration>(
+        await fetchAPI(`/events/${eventId}/register`, { method: 'DELETE' }),
+      );
+    },
+
+    /** The caller's own bookings. Scoped to them server-side; no user id is sent. */
+    async myRegistrations(query: PageQuery = {}): Promise<Paginated<MemberRegistration>> {
+      const qs = queryString({ page: query.page, pageSize: query.pageSize });
+      return unwrapPage<MemberRegistration>(await fetchAPI(`/events/registrations${qs}`));
+    },
   },
 
   admin: {
@@ -426,7 +550,7 @@ export const api = {
     verification: {
       async listPending(query: PageQuery = {}): Promise<Paginated<PendingUser>> {
         const qs = queryString({ page: query.page, pageSize: query.pageSize });
-        return unwrap<Paginated<PendingUser>>(await fetchAPI(`/admin/users/pending${qs}`));
+        return unwrapPage<PendingUser>(await fetchAPI(`/admin/users/pending${qs}`));
       },
 
       async approve(userId: string): Promise<{ approvalStatus: ApprovalStatus }> {
@@ -466,7 +590,7 @@ export const api = {
     admins: {
       async list(query: PageQuery = {}): Promise<Paginated<AdminUserRow>> {
         const qs = queryString({ page: query.page, pageSize: query.pageSize });
-        return unwrap<Paginated<AdminUserRow>>(await fetchAPI(`/admin/admins${qs}`));
+        return unwrapPage<AdminUserRow>(await fetchAPI(`/admin/admins${qs}`));
       },
 
       async create(input: AdminInput): Promise<AdminUserRow> {
@@ -496,17 +620,17 @@ export const api = {
 
     async listUsers(query: PageQuery = {}): Promise<Paginated<AdminUserRow>> {
       const qs = queryString({ page: query.page, pageSize: query.pageSize });
-      return unwrap<Paginated<AdminUserRow>>(await fetchAPI(`/admin/users${qs}`));
+      return unwrapPage<AdminUserRow>(await fetchAPI(`/admin/users${qs}`));
     },
 
     async listRegistrations(query: PageQuery = {}): Promise<Paginated<RegistrationRow>> {
       const qs = queryString({ page: query.page, pageSize: query.pageSize });
-      return unwrap<Paginated<RegistrationRow>>(await fetchAPI(`/admin/registrations${qs}`));
+      return unwrapPage<RegistrationRow>(await fetchAPI(`/admin/registrations${qs}`));
     },
 
     async listAuditLogs(query: PageQuery = {}): Promise<Paginated<AuditLogRow>> {
       const qs = queryString({ page: query.page, pageSize: query.pageSize });
-      return unwrap<Paginated<AuditLogRow>>(await fetchAPI(`/admin/audit-logs${qs}`));
+      return unwrapPage<AuditLogRow>(await fetchAPI(`/admin/audit-logs${qs}`));
     },
   },
 };

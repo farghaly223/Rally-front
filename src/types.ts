@@ -103,26 +103,6 @@ export interface VerificationContact {
   handleOrUrl: string;
 }
 
-/**
- * A local record of an RSVP.
- *
- * Still client-side: a real registration needs a row-locked capacity
- * transaction on the server, which is Phase 5.
- */
-export interface TicketBooking {
-  id: string;
-  eventId: string;
-  eventTitle: string;
-  cinema: string | null;
-  location: string | null;
-  startsAt: string | null;
-  posterUrl?: string | null;
-  bookingCode: string;
-  bookedAt: string;
-  whatsappInviteLink?: string | null;
-  bookingUrl?: string | null;
-}
-
 export type ActiveTab =
   | 'discover'
   | 'join-premiere'

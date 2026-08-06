@@ -5,6 +5,7 @@ import {
   canVerifyMembers,
   type UserProfile,
 } from '../../types';
+import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { ToastStack, useToasts } from '../ui/Toast';
 import { DashboardStats } from './DashboardStats';
 import { EventManager } from './EventManager';
@@ -164,18 +165,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
           ))}
         </nav>
 
-        {active === 'overview' && <DashboardStats />}
-        {active === 'events' && <EventManager notify={push} />}
-        {active === 'pending' && <PendingMembers notify={push} />}
-        {active === 'verification-contact' && <VerificationContactSettings notify={push} />}
-        {active === 'admins' && (
+        {/*
+          Every section is wrapped, not just the lazy one.
+
+          A render-time throw anywhere in here would otherwise unmount the whole
+          React root and leave the bare page background — the "black screen" this
+          boundary exists to end. `resetKey` is the active section, so switching
+          away from a failed panel clears the error rather than carrying it into
+          the next one.
+        */}
+        <ErrorBoundary
+          label={sections.find((item) => item.id === active)?.label ?? 'This section'}
+          resetKey={active}
+        >
           <Suspense fallback={sectionFallback}>
-            <AdminManager notify={push} />
+            {active === 'overview' && <DashboardStats />}
+            {active === 'events' && <EventManager notify={push} />}
+            {active === 'pending' && <PendingMembers notify={push} />}
+            {active === 'verification-contact' && <VerificationContactSettings notify={push} />}
+            {active === 'admins' && <AdminManager notify={push} />}
+            {active === 'users' && <UserManager />}
+            {active === 'registrations' && <RegistrationManager />}
+            {active === 'audit' && <AuditLog />}
           </Suspense>
-        )}
-        {active === 'users' && <UserManager />}
-        {active === 'registrations' && <RegistrationManager />}
-        {active === 'audit' && <AuditLog />}
+        </ErrorBoundary>
       </main>
 
       <ToastStack toasts={toasts} onDismiss={dismiss} />

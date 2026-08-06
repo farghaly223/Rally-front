@@ -1,14 +1,20 @@
 import React from 'react';
-import { UserProfile, isVerified } from '../types';
+import { UserProfile, VERIFICATION_PLATFORM_LABEL, VerificationContact, isVerified } from '../types';
 
 interface UserProfileViewProps {
   user: UserProfile;
+  /**
+   * Named here so the prompt can say who to message instead of sending her to
+   * another screen to find out. Null for anyone who does not need it.
+   */
+  verificationContact: VerificationContact | null;
   onNavigateToVerification: () => void;
   onLogout: () => void;
 }
 
 export const UserProfileView: React.FC<UserProfileViewProps> = ({
   user,
+  verificationContact,
   onNavigateToVerification,
   onLogout,
 }) => {
@@ -20,8 +26,8 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-indigo-500 to-transparent opacity-80" />
 
         <div className="flex flex-col md:flex-row items-center md:items-start gap-6 border-b border-zinc-800 pb-8">
-          {/* Initials, not a photo: the identity selfie is never retrievable by
-              a client and is destroyed once an admin decides. */}
+          {/* Initials, not a photo. Rally stores no image of a member at all —
+              verification is a conversation, so there is nothing to display. */}
           <div className="relative w-24 h-24 rounded-full overflow-hidden border-2 border-indigo-500 shadow-lg shadow-indigo-500/20 bg-zinc-800 flex items-center justify-center">
             <span className="font-display-lg text-3xl text-indigo-300">
               {user.fullName.trim().charAt(0).toUpperCase() || '?'}
@@ -54,11 +60,13 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
         {!verified ? (
           <div className="my-8 bg-zinc-950/80 rounded-2xl p-6 border border-amber-500/30 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-4">
-              <span className="material-symbols-outlined text-4xl text-amber-400">id_card</span>
+              <span className="material-symbols-outlined text-4xl text-amber-400">forum</span>
               <div>
-                <h4 className="font-headline-md text-base text-white">Complete Identity Verification</h4>
+                <h4 className="font-headline-md text-base text-white">Get Verified</h4>
                 <p className="font-body-md text-xs text-zinc-400 mt-0.5">
-                  Verify your selfie and official ID to gain instant velvet-rope access to premieres.
+                  {verificationContact
+                    ? `Message ${verificationContact.handleOrUrl} on ${VERIFICATION_PLATFORM_LABEL[verificationContact.platform]} and a real person will clear your access.`
+                    : 'Verification happens in a short conversation — no documents, no photos.'}
                 </p>
               </div>
             </div>
@@ -66,16 +74,16 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
               onClick={onNavigateToVerification}
               className="btn-primary px-6 py-3 rounded-full font-headline-md text-xs uppercase tracking-wider whitespace-nowrap cursor-pointer shadow-lg shadow-indigo-600/25"
             >
-              Verify Now
+              How It Works
             </button>
           </div>
         ) : (
           <div className="my-8 bg-zinc-950/80 rounded-2xl p-6 border border-zinc-800 flex items-center gap-4">
             <span className="material-symbols-outlined text-3xl text-emerald-400">shield_lock</span>
             <div>
-              <h4 className="font-headline-md text-base text-white">Verification Status Active</h4>
+              <h4 className="font-headline-md text-base text-white">Verified Access</h4>
               <p className="font-body-md text-xs text-zinc-400">
-                End-to-end identity proof active. You hold clear VIP access for all scheduled screenings.
+                Venue and showtimes are unlocked for every screening you can attend.
               </p>
             </div>
           </div>

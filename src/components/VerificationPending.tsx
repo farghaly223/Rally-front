@@ -15,6 +15,13 @@ interface VerificationPendingProps {
   loading?: boolean;
   error?: string | null;
   onBack: () => void;
+  /**
+   * Re-reads the profile from the server. Approval happens off-platform and
+   * out of band, so nothing pushes the news to a waiting member — without a
+   * way to ask again, she would have to sign out and back in to discover she
+   * was approved an hour ago.
+   */
+  onRefresh: () => void;
 }
 
 const PLATFORM_ICON: Record<VerificationContact['platform'], string> = {
@@ -36,6 +43,7 @@ export const VerificationPending: React.FC<VerificationPendingProps> = ({
   loading = false,
   error = null,
   onBack,
+  onRefresh,
 }) => {
   const href = contact ? verificationContactUrl(contact) : null;
 
@@ -135,7 +143,15 @@ export const VerificationPending: React.FC<VerificationPendingProps> = ({
             </p>
           )}
 
-          <div className="mt-8 flex justify-center border-t border-zinc-800 pt-6">
+          <div className="mt-8 flex flex-col justify-center gap-3 border-t border-zinc-800 pt-6 sm:flex-row">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={loading}
+              className="btn-primary font-label-caps cursor-pointer rounded-full px-8 py-3 text-xs font-bold disabled:opacity-50"
+            >
+              {loading ? 'Checking…' : "I've Been Verified"}
+            </button>
             <button
               type="button"
               onClick={onBack}

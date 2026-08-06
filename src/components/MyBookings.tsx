@@ -1,17 +1,30 @@
 import React from 'react';
-import { formatEventDateTime, formatVenue, type TicketBooking } from '../types';
+import { formatEventDateTime, formatVenue } from '../types';
+import type { MemberRegistration } from '../api/client';
 
 interface MyBookingsProps {
-  bookings: TicketBooking[];
+  bookings: MemberRegistration[];
   onNavigateToDiscover: () => void;
-  onCancelBooking: (id: string) => void;
+  /** Keyed by event, matching the endpoint — a member cancels "this screening". */
+  onCancelBooking: (eventId: string) => void;
 }
 
+/**
+ * The member's RSVPs, as the server holds them.
+ *
+ * Cancelled registrations are returned by the API and filtered out here rather
+ * than being hidden server-side: the row has to survive so the unique constraint
+ * on (user, event) keeps letting the member re-book, and the server is not in
+ * the business of deciding which of a member's own bookings they may look at.
+ */
 export const MyBookings: React.FC<MyBookingsProps> = ({
   bookings,
   onNavigateToDiscover,
   onCancelBooking,
-}) => (
+}) => {
+  const active = bookings.filter((booking) => booking.status !== 'CANCELLED');
+
+  return (
   <div className="mx-auto min-h-screen max-w-7xl bg-[#09090b] px-5 pt-20 pb-32 text-zinc-100 md:px-10 md:pt-28">
     <div className="bento-card mb-8 rounded-[32px] border border-zinc-800 bg-zinc-900/40 p-6 md:p-8">
       <div className="mb-1.5 flex items-center gap-2">
@@ -29,7 +42,7 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
       </p>
     </div>
 
-    {bookings.length === 0 ? (
+    {active.length === 0 ? (
       <div className="bento-card my-6 flex flex-col items-center justify-center gap-4 rounded-[32px] border border-zinc-800 bg-zinc-900/30 p-12 text-center">
         <span className="material-symbols-outlined text-6xl text-zinc-600">groups</span>
         <h3 className="font-headline-lg text-2xl text-white">No Movie Squad RSVPs Yet</h3>
@@ -46,16 +59,16 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
       </div>
     ) : (
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        {bookings.map((ticket) => (
+        {active.map((ticket) => (
           <div
             key={ticket.id}
             className="bento-card flex flex-col overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-900/40 shadow-xl transition-all hover:border-zinc-700 md:flex-row"
           >
             <div className="relative h-48 md:h-auto md:w-2/5">
-              {ticket.posterUrl ? (
+              {ticket.event.posterUrl ? (
                 <img
-                  src={ticket.posterUrl}
-                  alt={ticket.eventTitle}
+                  src={ticket.event.posterUrl}
+                  alt={ticket.event.movieName}
                   width={320}
                   height={240}
                   loading="lazy"
@@ -79,7 +92,7 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      onCancelBooking(ticket.id);
+                      onCancelBooking(ticket.eventId);
                     }}
                     className="font-label-caps cursor-pointer text-xs text-zinc-500 hover:text-red-400 hover:underline"
                   >
@@ -87,20 +100,22 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
                   </button>
                 </div>
 
-                <h3 className="font-headline-lg mb-2 text-xl text-white">{ticket.eventTitle}</h3>
+                <h3 className="font-headline-lg mb-2 text-xl text-white">
+                  {ticket.event.movieName}
+                </h3>
 
                 <div className="space-y-1.5 text-xs text-zinc-400">
                   <p className="flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-sm text-indigo-400">
                       location_on
                     </span>
-                    {formatVenue(ticket)}
+                    {formatVenue(ticket.event)}
                   </p>
                   <p className="flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-sm text-indigo-400">
                       schedule
                     </span>
-                    {formatEventDateTime(ticket.startsAt)}
+                    {formatEventDateTime(ticket.event.startsAt)}
                   </p>
                 </div>
               </div>
@@ -110,17 +125,22 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
                   <span className="font-label-caps block text-[9px] font-bold uppercase tracking-widest text-zinc-500">
                     Squad RSVP Code
                   </span>
-                  <span className="font-label-caps text-xs font-bold text-indigo-400">
-                    {ticket.bookingCode}
+                  {/*
+                    The real registration id, not a generated code. The previous
+                    `RLY-######` was `Math.random()` — it matched nothing on the
+                    server, so an admin could not have looked it up.
+                  */}
+                  <span className="font-label-caps text-xs font-bold uppercase text-indigo-400">
+                    {ticket.id.slice(0, 8)}
                   </span>
                 </div>
                 <span className="material-symbols-outlined text-xl text-zinc-400">badge</span>
               </div>
 
               <div className="flex flex-col gap-2">
-                {ticket.bookingUrl && (
+                {ticket.event.bookingUrl && (
                   <a
-                    href={ticket.bookingUrl}
+                    href={ticket.event.bookingUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="font-label-caps flex w-full items-center justify-center gap-1 rounded-xl border border-zinc-700 bg-zinc-800 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-zinc-200 hover:bg-zinc-700"
@@ -130,9 +150,9 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
                   </a>
                 )}
 
-                {ticket.whatsappInviteLink && (
+                {ticket.event.whatsappInviteLink && (
                   <a
-                    href={ticket.whatsappInviteLink}
+                    href={ticket.event.whatsappInviteLink}
                     target="_blank"
                     rel="noreferrer"
                     className="font-label-caps flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-500/20 bg-emerald-500/10 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-emerald-400 transition-all hover:bg-emerald-500/20"
@@ -147,5 +167,6 @@ export const MyBookings: React.FC<MyBookingsProps> = ({
         ))}
       </div>
     )}
-  </div>
-);
+    </div>
+  );
+};
