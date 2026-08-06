@@ -81,6 +81,12 @@ export const DashboardStats: React.FC = () => {
       icon: 'how_to_reg',
       accent: 'text-emerald-400',
     },
+    {
+      label: 'Open Reports',
+      value: stats.openReports ?? 0,
+      icon: 'flag',
+      accent: 'text-red-400',
+    },
   ];
 
   return (

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { formatEventDateTime, formatVenue, type RallyEvent } from '../types';
 import { APIError, type MemberRegistration } from '../api/client';
+import { ReportModal } from './ReportModal';
 
 interface TicketModalProps {
   event: RallyEvent;
@@ -39,6 +40,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   const [activeTab, setActiveTab] = useState<'rsvp' | 'chat'>('rsvp');
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [reporting, setReporting] = useState(false);
 
   const handleClaimPass = (): void => {
     if (detailLocked && onRequireVerification) {
@@ -412,8 +414,39 @@ export const TicketModal: React.FC<TicketModalProps> = ({
               )}
             </div>
           )}
+
+          {/*
+            Reporting an event lives at the foot of the modal, quiet by design:
+            it is a safety valve, not a primary action. The gender wall is
+            enforced server-side — a member can only ever open this modal for an
+            event of their own gender, so the submit is scoped by the same
+            invariant that scoped the listing.
+          */}
+          <div className="mt-2 flex justify-center border-t border-zinc-800/60 pt-4">
+            <button
+              type="button"
+              onClick={() => {
+                setReporting(true);
+              }}
+              className="font-label-caps flex cursor-pointer items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-zinc-500 transition-colors hover:text-red-400"
+            >
+              <span className="material-symbols-outlined text-sm">flag</span>
+              Report this event
+            </button>
+          </div>
         </div>
       </div>
+
+      {reporting && (
+        <ReportModal
+          targetType="EVENT"
+          targetId={event.id}
+          targetLabel={event.movieName}
+          onClose={() => {
+            setReporting(false);
+          }}
+        />
+      )}
     </div>
   );
 };

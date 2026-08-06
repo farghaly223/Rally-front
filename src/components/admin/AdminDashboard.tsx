@@ -12,6 +12,7 @@ import { EventManager } from './EventManager';
 import { PendingMembers } from './PendingMembers';
 import { VerificationContactSettings } from './VerificationContactSettings';
 import { UserManager } from './UserManager';
+import { ReportManager } from './ReportManager';
 import { RegistrationManager } from './RegistrationManager';
 import { AuditLog } from './AuditLog';
 
@@ -31,6 +32,7 @@ type Section =
   | 'events'
   | 'pending'
   | 'verification-contact'
+  | 'reports'
   | 'admins'
   | 'users'
   | 'registrations'
@@ -65,6 +67,7 @@ function sectionsFor(role: UserProfile['role']): SectionDef[] {
     sections.push(
       { id: 'pending', label: 'Pending Members', icon: 'how_to_reg' },
       { id: 'verification-contact', label: 'Verification Contact', icon: 'alternate_email' },
+      { id: 'reports', label: 'Reports', icon: 'flag' },
     );
   }
 
@@ -183,6 +186,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
             {active === 'events' && <EventManager notify={push} />}
             {active === 'pending' && <PendingMembers notify={push} />}
             {active === 'verification-contact' && <VerificationContactSettings notify={push} />}
+            {active === 'reports' && <ReportManager notify={push} />}
             {active === 'admins' && <AdminManager notify={push} />}
             {active === 'users' && <UserManager />}
             {active === 'registrations' && <RegistrationManager />}

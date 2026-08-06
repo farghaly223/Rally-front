@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { UserProfile, VERIFICATION_PLATFORM_LABEL, VerificationContact, isVerified } from '../types';
+import { ReportModal } from './ReportModal';
 
 interface UserProfileViewProps {
   user: UserProfile;
@@ -19,6 +20,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
   onLogout,
 }) => {
   const verified = isVerified(user);
+  const [reporting, setReporting] = useState(false);
 
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100 pt-20 md:pt-28 pb-32 px-5 md:px-10 max-w-4xl mx-auto">
@@ -108,6 +110,35 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
           </div>
         </div>
 
+        {/* Report a member.
+            Shown only to verified members — an unverified member cannot reach
+            anyone to report, and the backend rejects the call regardless. The
+            subject is identified by TYPED phone/name, never a list: no member is
+            ever exposed to another. The modal makes clear the match is private
+            and the reporter is never disclosed. */}
+        {verified && (
+          <div className="mt-8 pt-6 border-t border-zinc-800">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <span className="material-symbols-outlined text-3xl text-zinc-400">flag</span>
+                <div>
+                  <h4 className="font-headline-md text-base text-white">Report a member</h4>
+                  <p className="font-body-md text-xs text-zinc-400 mt-0.5">
+                    Concerned about someone? Report them by phone number or name.
+                    It stays private — they’re never told who reported them.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReporting(true)}
+                className="px-6 py-3 rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors font-headline-md text-xs uppercase tracking-wider whitespace-nowrap cursor-pointer"
+              >
+                Report a Member
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
         <div className="mt-8 pt-6 border-t border-zinc-800 flex justify-end">
           <button
@@ -118,6 +149,8 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
           </button>
         </div>
       </div>
+
+      {reporting && <ReportModal targetType="USER" onClose={() => setReporting(false)} />}
     </div>
   );
 };

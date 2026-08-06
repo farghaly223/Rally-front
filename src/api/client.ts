@@ -264,6 +264,7 @@ export interface DashboardStats {
   totalEvents: number;
   openEvents: number;
   totalRegistrations: number;
+  openReports: number;
 }
 
 export interface Paginated<T> {
@@ -290,6 +291,121 @@ export interface AdminUserRow {
 
 /** The two roles the API will mint. `SUPER_ADMIN` is rejected server-side. */
 export type CreatableAdminRole = 'EVENTS_ADMIN' | 'VERIFICATION_ADMIN';
+
+// ── Moderation ───────────────────────────────────────────
+
+/**
+ * A member row in the moderation directory.
+ *
+ * Wider than `AdminUserRow`: moderation needs the email and username to
+ * identify someone from a report, which the plain member directory does not
+ * publish.
+ */
+export interface MemberRow {
+  id: string;
+  fullName: string;
+  phone: string;
+  gender: Gender;
+  username: string | null;
+  email: string | null;
+  role: Role;
+  approvalStatus: ApprovalStatus;
+  approvalDate: string | null;
+  createdAt: string;
+}
+
+export interface MemberQuery extends PageQuery {
+  status?: ApprovalStatus;
+  search?: string;
+}
+
+// ── Reporting ────────────────────────────────────────────
+
+export type ReportTargetType = 'USER' | 'EVENT';
+
+export type ReportReason =
+  | 'HARASSMENT'
+  | 'INAPPROPRIATE_BEHAVIOUR'
+  | 'FAKE_PROFILE'
+  | 'SPAM'
+  | 'SAFETY_CONCERN'
+  | 'INCORRECT_EVENT_DETAILS'
+  | 'OTHER';
+
+export type ReportStatus = 'OPEN' | 'REVIEWING' | 'RESOLVED' | 'DISMISSED';
+
+/**
+ * A report submission.
+ *
+ * The two target types are shaped differently, mirroring the backend's
+ * discriminated union:
+ *
+ *  * **EVENT** — the client sees the event, so it sends the event's `targetId`.
+ *  * **USER** — the client must never see or pick another member, so there is no
+ *    id to send. It sends the phone number or name the reporter *typed*, and the
+ *    server resolves it privately. The response is identical whether or not it
+ *    matched an account, so this call cannot be used to discover who is on Rally.
+ */
+export type SubmitReportData =
+  | {
+      targetType: 'EVENT';
+      targetId: string;
+      reason: ReportReason;
+      details?: string;
+    }
+  | {
+      targetType: 'USER';
+      subjectQuery: string;
+      reason: ReportReason;
+      details?: string;
+    };
+
+/**
+ * What the reporter sees of their own report.
+ *
+ * Deliberately thin — matches the backend's reporter projection. There is no
+ * `adminNote` and no subject detail here, and that is the point: a reporter
+ * learns only that their report exists and where it stands.
+ */
+export interface MemberReport {
+  id: string;
+  targetType: ReportTargetType;
+  reason: ReportReason;
+  status: ReportStatus;
+  createdAt: string;
+}
+
+/** What an admin working the queue sees — including who filed it. */
+export interface AdminReportRow {
+  id: string;
+  targetType: ReportTargetType;
+  reason: ReportReason;
+  details: string | null;
+  status: ReportStatus;
+  adminNote: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  reporter: { id: string; fullName: string; phone: string; email: string | null };
+  reportedUser: {
+    id: string;
+    fullName: string;
+    phone: string;
+    email: string | null;
+    approvalStatus: ApprovalStatus;
+  } | null;
+  /**
+   * The raw phone/name the reporter typed for a USER report. Present whether or
+   * not it resolved: if `reportedUser` is null but this is set, the report did
+   * not match an account and the admin acts on the typed text directly.
+   */
+  reportedUserQuery: string | null;
+  reportedEvent: { id: string; movieName: string; startsAt: string; gender: Gender } | null;
+  resolvedByAdmin: { id: string; fullName: string } | null;
+}
+
+export interface ReportQuery extends PageQuery {
+  status?: ReportStatus;
+}
 
 export interface AdminInput {
   /** The Supabase credential. Required — the new admin signs in with it. */
@@ -631,6 +747,65 @@ export const api = {
     async listAuditLogs(query: PageQuery = {}): Promise<Paginated<AuditLogRow>> {
       const qs = queryString({ page: query.page, pageSize: query.pageSize });
       return unwrapPage<AuditLogRow>(await fetchAPI(`/admin/audit-logs${qs}`));
+    },
+  },
+
+  /**
+   * Member moderation. SUPER_ADMIN only — every route below returns 403 for any
+   * other role, enforced server-side.
+   */
+  moderation: {
+    async listMembers(query: MemberQuery = {}): Promise<Paginated<MemberRow>> {
+      const qs = queryString({
+        page: query.page,
+        pageSize: query.pageSize,
+        status: query.status,
+        search: query.search,
+      });
+      return unwrapPage<MemberRow>(await fetchAPI(`/admin/members${qs}`));
+    },
+
+    async blockMember(userId: string): Promise<MemberRow> {
+      return unwrap<MemberRow>(await fetchAPI(`/admin/members/${userId}/block`, { method: 'POST' }));
+    },
+
+    async reinstateMember(userId: string): Promise<MemberRow> {
+      return unwrap<MemberRow>(
+        await fetchAPI(`/admin/members/${userId}/reinstate`, { method: 'POST' }),
+      );
+    },
+
+    /** Soft delete — the row persists so the phone and email stay claimed. */
+    async deleteMember(userId: string): Promise<MemberRow> {
+      return unwrap<MemberRow>(await fetchAPI(`/admin/members/${userId}`, { method: 'DELETE' }));
+    },
+  },
+
+  reports: {
+    async submit(data: SubmitReportData): Promise<MemberReport> {
+      const body = JSON.stringify(data);
+      const headers = { 'Content-Type': 'application/json' };
+      return unwrap<MemberReport>(await fetchAPI('/reports', { method: 'POST', body, headers }));
+    },
+
+    async listMine(): Promise<MemberReport[]> {
+      return unwrap<MemberReport[]>(await fetchAPI('/reports/mine'));
+    },
+
+    async listAll(query: ReportQuery = {}): Promise<Paginated<AdminReportRow>> {
+      const qs = queryString({ page: query.page, pageSize: query.pageSize, status: query.status });
+      return unwrapPage<AdminReportRow>(await fetchAPI(`/admin/reports${qs}`));
+    },
+
+    async updateStatus(
+      reportId: string,
+      data: { status: ReportStatus; adminNote?: string },
+    ): Promise<AdminReportRow> {
+      const body = JSON.stringify(data);
+      const headers = { 'Content-Type': 'application/json' };
+      return unwrap<AdminReportRow>(
+        await fetchAPI(`/admin/reports/${reportId}`, { method: 'PATCH', body, headers }),
+      );
     },
   },
 };
